@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AxClass xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+    <Name>ABR_SalesOrderReleaseResult</Name>
+    <SourceCode>
+        <Declaration><![CDATA[
+/// <summary>
+/// Holds the per-order evaluation result produced by <c>ABR_SalesOrderReleaseAgent</c>.
+/// </summary>
+internal final class ABR_SalesOrderReleaseResult
+{
+    private SalesId       salesId;
+    private boolean       released;
+    private str           reservationStatus;
+    private str           shippingAdvice;
+    private str           errorReason;
+
+}
+]]></Declaration>
+        <Methods>
+            <Method>
+                <Name>salesId</Name>
+                <Source><![CDATA[
+    /// <summary>Gets the sales order number.</summary>
+    public SalesId salesId()
+    {
+        return salesId;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>parmSalesId</Name>
+                <Source><![CDATA[
+    /// <summary>Sets the sales order number.</summary>
+    public SalesId parmSalesId(SalesId _salesId = salesId)
+    {
+        salesId = _salesId;
+        return salesId;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>released</Name>
+                <Source><![CDATA[
+    /// <summary>Returns <c>true</c> when the order was successfully released.</summary>
+    public boolean released()
+    {
+        return released;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>parmReleased</Name>
+                <Source><![CDATA[
+    /// <summary>Sets the released flag.</summary>
+    public boolean parmReleased(boolean _released = released)
+    {
+        released = _released;
+        return released;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>reservationStatus</Name>
+                <Source><![CDATA[
+    /// <summary>Returns the human-readable reservation status ("Full", "Partial", "None").</summary>
+    public str reservationStatus()
+    {
+        return reservationStatus;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>parmReservationStatus</Name>
+                <Source><![CDATA[
+    /// <summary>Sets the reservation status label.</summary>
+    public str parmReservationStatus(str _reservationStatus = reservationStatus)
+    {
+        reservationStatus = _reservationStatus;
+        return reservationStatus;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>shippingAdvice</Name>
+                <Source><![CDATA[
+    /// <summary>Returns the human-readable shipping advice ("Complete", "Partial").</summary>
+    public str shippingAdvice()
+    {
+        return shippingAdvice;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>parmShippingAdvice</Name>
+                <Source><![CDATA[
+    /// <summary>Sets the shipping advice label.</summary>
+    public str parmShippingAdvice(str _shippingAdvice = shippingAdvice)
+    {
+        shippingAdvice = _shippingAdvice;
+        return shippingAdvice;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>errorReason</Name>
+                <Source><![CDATA[
+    /// <summary>Returns the error reason when evaluation could not be completed.</summary>
+    public str errorReason()
+    {
+        return errorReason;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>parmErrorReason</Name>
+                <Source><![CDATA[
+    /// <summary>Sets the error reason.</summary>
+    public str parmErrorReason(str _errorReason = errorReason)
+    {
+        errorReason = _errorReason;
+        return errorReason;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>construct</Name>
+                <Source><![CDATA[
+    /// <summary>Creates a new instance.</summary>
+    public static ABR_SalesOrderReleaseResult construct()
+    {
+        return new ABR_SalesOrderReleaseResult();
+    }
+]]></Source>
+            </Method>
+        </Methods>
+    </SourceCode>
+</AxClass>
