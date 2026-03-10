@@ -1,0 +1,416 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AxClass xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+    <Name>ABR_SalesOrderReleaseAgent</Name>
+    <SourceCode>
+        <Declaration><![CDATA[
+/// <summary>
+/// Sales Order Release Agent for Dynamics 365 Finance &amp; Operations.
+///
+/// Queries all open sales orders (SalesStatus::Backorder) for a requested
+/// shipment date, evaluates each order against inventory reservation status
+/// and shipping advice, releases qualifying orders, and prints a summary.
+///
+/// Naming convention  : ABR_ prefix (company extension standard)
+/// Extension model    : ABR_SalesOrderRelease
+/// Required models    : ApplicationSuite, ApplicationFoundation, ApplicationPlatform
+/// Coding standard    : X++ Extensions / CoC only — no overlayering
+/// </summary>
+public final class ABR_SalesOrderReleaseAgent
+{
+    // ── Reservation status labels ────────────────────────────────────────────
+    private const str ReservationFull    = 'Full';
+    private const str ReservationPartial = 'Partial';
+    private const str ReservationNone    = 'None';
+
+    // ── Shipping advice labels ───────────────────────────────────────────────
+    private const str AdviceComplete = 'Complete';
+    private const str AdvicePartial  = 'Partial';
+
+    // ── Error labels ─────────────────────────────────────────────────────────
+    private const str ErrReservationUnavailable = 'Reservation data unavailable';
+    private const str ErrShippingAdviceNotSet   = 'Shipping advice not set';
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    private TransDate targetDate;
+
+}
+]]></Declaration>
+        <Methods>
+            <Method>
+                <Name>parmTargetDate</Name>
+                <Source><![CDATA[
+    /// <summary>Gets or sets the target shipment date used to filter open orders.</summary>
+    public TransDate parmTargetDate(TransDate _targetDate = targetDate)
+    {
+        targetDate = _targetDate;
+        return targetDate;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>run</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// Entry point — executes the full release evaluation and prints the summary.
+    /// </summary>
+    public void run()
+    {
+        List results = this.collectAndProcess();
+        this.printSummary(results);
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>collectAndProcess</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// Step 1 — Queries all open backorder sales lines for the target date,
+    /// then processes each order in Step 2.
+    /// </summary>
+    /// <returns>A <c>List</c> of <c>ABR_SalesOrderReleaseResult</c> instances.</returns>
+    private List collectAndProcess()
+    {
+        List            results     = new List(Types::Class);
+        SalesTable      salesTable;
+        Set             processedIds = new Set(Types::String);
+
+        // Step 1 — collect all qualifying SalesTable records first
+        List salesIds = new List(Types::String);
+
+        while select SalesId from salesTable
+            where salesTable.SalesStatus          == SalesStatus::Backorder
+               && salesTable.ShippingDateRequested == targetDate
+        {
+            if (!processedIds.in(salesTable.SalesId))
+            {
+                processedIds.add(salesTable.SalesId);
+                salesIds.add(salesTable.SalesId);
+            }
+        }
+
+        // Step 2 — process every collected order (never stop on a single failure)
+        ListEnumerator le = salesIds.getEnumerator();
+        while (le.moveNext())
+        {
+            SalesId salesId = le.current();
+            ABR_SalesOrderReleaseResult result;
+
+            try
+            {
+                result = this.processOrder(salesId);
+            }
+            catch (Exception::Error)
+            {
+                // Safe-fail: flag and continue
+                result = ABR_SalesOrderReleaseResult::construct();
+                result.parmSalesId(salesId);
+                result.parmReleased(false);
+                result.parmErrorReason(ABR_SalesOrderReleaseAgent::ErrReservationUnavailable);
+            }
+
+            results.addEnd(result);
+        }
+
+        return results;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>processOrder</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// Step 2 — Evaluates a single sales order following the exact sequential steps.
+    /// </summary>
+    /// <param name="_salesId">The sales order number to evaluate.</param>
+    /// <returns>An <c>ABR_SalesOrderReleaseResult</c> describing the outcome.</returns>
+    private ABR_SalesOrderReleaseResult processOrder(SalesId _salesId)
+    {
+        ABR_SalesOrderReleaseResult result = ABR_SalesOrderReleaseResult::construct();
+        result.parmSalesId(_salesId);
+
+        SalesTable salesTable = SalesTable::find(_salesId);
+
+        // SECOND — determine reservation status
+        str reservationStatus = this.getReservationStatus(_salesId);
+        result.parmReservationStatus(reservationStatus);
+
+        if (reservationStatus == ABR_SalesOrderReleaseAgent::ErrReservationUnavailable)
+        {
+            result.parmReleased(false);
+            result.parmErrorReason(ABR_SalesOrderReleaseAgent::ErrReservationUnavailable);
+            return result;
+        }
+
+        // THIRD — determine shipping advice
+        str shippingAdvice = this.getShippingAdvice(salesTable);
+        result.parmShippingAdvice(shippingAdvice);
+
+        if (shippingAdvice == ABR_SalesOrderReleaseAgent::ErrShippingAdviceNotSet)
+        {
+            result.parmReleased(false);
+            result.parmErrorReason(ABR_SalesOrderReleaseAgent::ErrShippingAdviceNotSet);
+            return result;
+        }
+
+        // FOURTH — apply release decision matrix
+        boolean shouldRelease = this.shouldRelease(shippingAdvice, reservationStatus);
+
+        // FIFTH — execute
+        if (shouldRelease)
+        {
+            this.releaseOrder(salesTable);
+            result.parmReleased(true);
+        }
+        else
+        {
+            result.parmReleased(false);
+        }
+
+        return result;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>getReservationStatus</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// SECOND — Calculates the physical reservation status for a sales order
+    /// by aggregating all non-drop-ship sales lines.
+    /// Drop-ship lines (InventRefType::Purch) are intentionally excluded because
+    /// they are fulfilled directly by the vendor and carry no warehouse stock.
+    /// When an order contains only drop-ship or non-inventory lines the aggregated
+    /// ordered quantity will be zero; such orders are treated as "None" reservation
+    /// and will therefore not be released — consistent with the safe-fail principle.
+    /// </summary>
+    /// <param name="_salesId">Sales order number.</param>
+    /// <returns>
+    /// "Full", "Partial", "None", or the error label when data is unreadable.
+    /// </returns>
+    private str getReservationStatus(SalesId _salesId)
+    {
+        SalesLine   salesLine;
+        real        totalOrdered  = 0;
+        real        totalReserved = 0;
+
+        try
+        {
+            while select QtyOrdered, ReservPhysical from salesLine
+                where salesLine.SalesId      == _salesId
+                   && salesLine.InventRefType != InventRefType::Purch   // exclude drop-ship
+            {
+                totalOrdered  += salesLine.QtyOrdered;
+                totalReserved += salesLine.ReservPhysical;
+            }
+        }
+        catch (Exception::Error)
+        {
+            return ABR_SalesOrderReleaseAgent::ErrReservationUnavailable;
+        }
+
+        if (totalOrdered <= 0)
+        {
+            // No stockable lines — treat as no reservation
+            return ABR_SalesOrderReleaseAgent::ReservationNone;
+        }
+
+        if (totalReserved >= totalOrdered)
+        {
+            return ABR_SalesOrderReleaseAgent::ReservationFull;
+        }
+        else if (totalReserved > 0)
+        {
+            return ABR_SalesOrderReleaseAgent::ReservationPartial;
+        }
+        else
+        {
+            return ABR_SalesOrderReleaseAgent::ReservationNone;
+        }
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>getShippingAdvice</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// THIRD — Reads the ShippingAdvice field from the sales order header.
+    /// </summary>
+    /// <param name="_salesTable">The sales order header record.</param>
+    /// <returns>"Complete", "Partial", or the error label when the field is unset.</returns>
+    private str getShippingAdvice(SalesTable _salesTable)
+    {
+        switch (_salesTable.ShippingAdvice)
+        {
+            case ShippingAdvice::Complete:
+                return ABR_SalesOrderReleaseAgent::AdviceComplete;
+
+            case ShippingAdvice::Partial:
+                return ABR_SalesOrderReleaseAgent::AdvicePartial;
+
+            default:
+                return ABR_SalesOrderReleaseAgent::ErrShippingAdviceNotSet;
+        }
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>shouldRelease</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// FOURTH — Applies the release decision matrix.
+    /// </summary>
+    /// <param name="_shippingAdvice">Shipping advice label.</param>
+    /// <param name="_reservationStatus">Reservation status label.</param>
+    /// <returns><c>true</c> when the order qualifies for release.</returns>
+    private boolean shouldRelease(str _shippingAdvice, str _reservationStatus)
+    {
+        // Complete advice: only full reservation triggers release
+        if (_shippingAdvice == ABR_SalesOrderReleaseAgent::AdviceComplete)
+        {
+            return _reservationStatus == ABR_SalesOrderReleaseAgent::ReservationFull;
+        }
+
+        // Partial advice: full or partial reservation triggers release; none does not
+        if (_shippingAdvice == ABR_SalesOrderReleaseAgent::AdvicePartial)
+        {
+            return _reservationStatus == ABR_SalesOrderReleaseAgent::ReservationFull
+                || _reservationStatus == ABR_SalesOrderReleaseAgent::ReservationPartial;
+        }
+
+        // Safe-fail for any unrecognised combination
+        return false;
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>releaseOrder</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// FIFTH — Releases the sales order to the warehouse by posting a release-to-warehouse
+    /// action via <c>WHSLoadTable</c> / <c>SalesRelease</c>.
+    /// </summary>
+    /// <param name="_salesTable">The sales order header record to release.</param>
+    private void releaseOrder(SalesTable _salesTable)
+    {
+        SalesRelease salesRelease = SalesRelease::newFromSalesTable(_salesTable);
+        salesRelease.run();
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>printSummary</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// Step 4 — Formats and prints the output summary in the exact required format.
+    /// </summary>
+    /// <param name="_results">List of <c>ABR_SalesOrderReleaseResult</c> objects.</param>
+    private void printSummary(List _results)
+    {
+        List releasedIds   = new List(Types::String);
+        List notReleasedLines = new List(Types::String);
+
+        ListEnumerator le = _results.getEnumerator();
+        while (le.moveNext())
+        {
+            ABR_SalesOrderReleaseResult result = le.current();
+
+            if (result.released())
+            {
+                releasedIds.addEnd(result.salesId());
+            }
+            else
+            {
+                str reason;
+
+                if (result.errorReason())
+                {
+                    reason = strFmt('Reservation Status: %1', result.errorReason());
+                }
+                else
+                {
+                    reason = strFmt('Reservation Status: %1, Shipping Advice: %2',
+                        result.reservationStatus(),
+                        result.shippingAdvice());
+                }
+
+                notReleasedLines.addEnd(
+                    strFmt('Sales order %1: %2', result.salesId(), reason));
+            }
+        }
+
+        // Header — date formatted as DD/MM/YYYY (sequence 123 = Day/Month/Year in date2Str)
+        info(strFmt('All open sales orders with shipment date %1 have been reviewed:',
+            date2Str(targetDate, 123, DateDay::Digits2, DateSeparator::Slash,
+                     DateMonth::Digits2, DateSeparator::Slash, DateYear::Digits4)));
+
+        // Released list
+        if (!releasedIds.empty())
+        {
+            str idList = '';
+            ListEnumerator idEnum = releasedIds.getEnumerator();
+            while (idEnum.moveNext())
+            {
+                if (idList)
+                {
+                    idList += ', ';
+                }
+                idList += idEnum.current();
+            }
+            info(strFmt('Sales orders %1 were released.', idList));
+        }
+
+        // Not-released list
+        if (!notReleasedLines.empty())
+        {
+            info('Not released:');
+
+            ListEnumerator nlEnum = notReleasedLines.getEnumerator();
+            while (nlEnum.moveNext())
+            {
+                info(nlEnum.current());
+            }
+
+            info('Please review flagged orders for further action.');
+        }
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>construct</Name>
+                <Source><![CDATA[
+    /// <summary>Creates a new instance of <c>ABR_SalesOrderReleaseAgent</c>.</summary>
+    public static ABR_SalesOrderReleaseAgent construct()
+    {
+        return new ABR_SalesOrderReleaseAgent();
+    }
+]]></Source>
+            </Method>
+            <Method>
+                <Name>main</Name>
+                <Source><![CDATA[
+    /// <summary>
+    /// Runnable entry point — reads the target date from the dialog and runs the agent.
+    /// </summary>
+    public static void main(Args _args)
+    {
+        ABR_SalesOrderReleaseAgent agent = ABR_SalesOrderReleaseAgent::construct();
+
+        // Prompt the user for the target shipment date
+        DialogField dfDate;
+        Dialog      dlg = new Dialog('Release Sales Orders');
+        dlg.addText('Select the requested shipment date to process:');
+        dfDate = dlg.addField(extendedTypeStr(TransDate), 'Shipment date');
+        dfDate.value(today());
+
+        if (!dlg.run())
+        {
+            return;
+        }
+
+        agent.parmTargetDate(dfDate.value());
+        agent.run();
+    }
+]]></Source>
+            </Method>
+        </Methods>
+    </SourceCode>
+</AxClass>
